@@ -412,9 +412,9 @@ src/main/resources/
 
 ## Time spent and scope
 
-The challenge suggests 60 minutes. This took 60 minutes in desing, and 60 minutes on development and testing.
+The challenge suggests 60 minutes. This took 60 minutes in decisions, and 60 minutes on desing, development and testing.
 
-I chose to go beyond the suggested scope on purpose: TODO (for example, "the role I am applying
+I chose to go beyond the suggested scope on purpose: the role I am applying
 for owns a workflow runtime, so I wanted the data-driven state machine, role rules and audit
 trail to be part of the conversation instead of only described"). The README and the decisions
 above are what I would have delivered in the first hour; the rest is the implementation of that
