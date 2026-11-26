@@ -278,7 +278,9 @@ Protocol-level errors raised by Spring MVC itself (not by the application) use t
   the framework's, passes through one place that adds `errorCode` and `requestId` (from the MDC;
   same value as the `X-Request-Id` response header).
 - Logging: expected errors (`ApiException`, optimistic locking conflict) are one INFO line;
-  unexpected ones are logged at ERROR with the stack trace. The `500` body never includes the
+  unexpected ones are logged at ERROR with the stack trace. A version conflict is logged by
+  entity and id only (`Request rejected: CONCURRENT_MODIFICATION on Action 42`): the exception
+  message contains the SQL statement, which never goes to the logs. The `500` body never includes the
   exception message or stack trace: `"An unexpected error occurred. Quote the requestId when
   reporting it."`
 - Known limit: errors raised **outside** Spring MVC (in a servlet filter, before the
@@ -375,7 +377,28 @@ Example after creating action 42 assigned to `lucia` and completing it:
   - admin reopens a completed action; reviewer cannot;
   - admin reassigns; requester cannot assign someone else's action;
   - audit search by action, by user and date range; 403 for non-admins; 400 for `from > to`.
-- Concurrency test: two simultaneous completions on the same action, exactly one succeeds.
+- Concurrency tests (`actions` package):
+  - **Real race** (`ConcurrentCompletionIntegrationTests`): 25 rounds per run, each on a fresh
+    action; lucia (`APPROVED`) and admin (`REJECTED`) complete it from two threads released
+    together by a `CyclicBarrier`. It goes through MockMvc rather than real HTTP, but the two
+    threads use separate real transactions and commits, so the database conflict is real. Only
+    timing-independent invariants are asserted: exactly one `200`; the other `409` with
+    `CONCURRENT_MODIFICATION` or `ACTION_ALREADY_COMPLETED`; final outcome and `completedBy`
+    are the winner's; `version` increased by exactly one; exactly one completion (state and
+    outcome rows) in the audit.
+  - Which `409` the loser gets depends on timing, so it is **reported, not asserted**. Observed:
+    under normal load always `CONCURRENT_MODIFICATION` (both read before either commits);
+    with every CPU busy, `ACTION_ALREADY_COMPLETED` in 1–2 of 25 rounds (the loser reads after
+    the winner's commit). The sequential "complete again with a different outcome" case is also
+    covered by its own test. H2 makes the second writer wait for the row lock and then update
+    no row; no lock timeouts were observed.
+  - **Deterministic stale version** (`StaleVersionIntegrationTests`): a `@MockitoSpyBean` on
+    `TransitionEngine` lets the real `apply` run, then commits `version + 1` on that action in a
+    `REQUIRES_NEW` transaction, so the request writes with a stale version. Asserts `409
+    CONCURRENT_MODIFICATION`, the action unchanged except the other transaction's increment, no
+    completion in the audit, and a log line without SQL. In its own class because the spy makes
+    Spring start a separate test context.
+  - Flakiness check: 10 consecutive runs plus 3 with every CPU core busy, all passing.
 - Unit tests: transition engine and startup configuration validator (including a
   misconfigured final-state transition).
 

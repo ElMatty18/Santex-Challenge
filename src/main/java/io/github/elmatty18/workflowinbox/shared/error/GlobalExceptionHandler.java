@@ -18,6 +18,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -46,9 +47,19 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 		return ResponseEntity.status(ex.errorCode().status()).body(body);
 	}
 
+	/**
+	 * Logged with the entity and id only: the exception message contains the SQL statement.
+	 */
 	@ExceptionHandler(OptimisticLockingFailureException.class)
 	ResponseEntity<Object> handleOptimisticLock(OptimisticLockingFailureException ex) {
-		log.info("Request rejected: {} {}", ErrorCode.CONCURRENT_MODIFICATION, ex.getMessage());
+		if (ex instanceof ObjectOptimisticLockingFailureException entity) {
+			String type = entity.getPersistentClassName();
+			log.info("Request rejected: {} on {} {}", ErrorCode.CONCURRENT_MODIFICATION,
+					type.substring(type.lastIndexOf('.') + 1), entity.getIdentifier());
+		}
+		else {
+			log.info("Request rejected: {}", ErrorCode.CONCURRENT_MODIFICATION);
+		}
 		return respond(problem(ErrorCode.CONCURRENT_MODIFICATION,
 				"The resource was modified by another request; reload it and retry"));
 	}
