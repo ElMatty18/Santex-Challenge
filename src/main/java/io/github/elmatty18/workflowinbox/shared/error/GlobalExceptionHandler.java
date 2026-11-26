@@ -13,7 +13,9 @@ public class GlobalExceptionHandler {
 
 	@ExceptionHandler(ApiException.class)
 	ResponseEntity<ProblemDetail> handleApiException(ApiException ex) {
-		return problem(ex.errorCode(), ex.getMessage());
+		ResponseEntity<ProblemDetail> response = problem(ex.errorCode(), ex.getMessage());
+		ex.properties().forEach(response.getBody()::setProperty);
+		return response;
 	}
 
 	private static ResponseEntity<ProblemDetail> problem(ErrorCode errorCode, String detail) {

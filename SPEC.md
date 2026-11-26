@@ -70,6 +70,7 @@ in the README (section 12).
 | `assigneeId` | String | nullable |
 | `outcome` | enum | nullable: `APPROVED`, `REJECTED`, `DONE` |
 | `comment` | String | nullable, max 2000 chars |
+| `completedBy`, `completedAt` | String, Instant | nullable; set on `COMPLETE`, cleared on `REOPEN`; not audited (derived from `state`/`outcome`); used in the `409 ACTION_ALREADY_COMPLETED` body. Added by migration `V4` |
 | `createdAt`, `updatedAt` | Instant | |
 | `version` | Long | `@Version` (optimistic locking) |
 
@@ -120,19 +121,34 @@ The table decides **whether** a transition is allowed. A `TransitionHandler` per
 
 | Code | Behaviour |
 |---|---|
-| ASSIGN / REASSIGN | requires `assigneeId` of an existing user with role `REVIEWER`; sets assignee |
-| COMPLETE | validates outcome for the action type (section 7); sets outcome and comment |
-| REOPEN | requires `comment` (the reason); stores the reason in `comment`, clears outcome, keeps the assignee |
+| ASSIGN / REASSIGN | requires `assigneeId` of an existing user with role `REVIEWER`; sets assignee. Reassigning to the current assignee → `422` |
+| COMPLETE | validates outcome for the action type (section 7); sets outcome, comment, `completedBy`, `completedAt` |
+| REOPEN | requires `comment` (the reason); stores the reason in `comment`, clears outcome, `completedBy` and `completedAt`, keeps the assignee |
 | any other code | generic handler: only changes the state |
 
 So a new intermediate state with a new code (e.g. `START_REVIEW 10 → 50`) needs only migration
 rows. Only a transition with new side effects needs a new handler class.
 
+- Handlers are selected by transition code; one handler may serve several codes. Two handlers
+  claiming the same code make the application fail to start.
+- Request fields a transition does not use (e.g. `outcome` on `ASSIGN`) are **ignored**, not
+  rejected.
+- The `workflow` module does not depend on `actions`: the engine works on a `WorkflowItem`
+  interface that the `Action` entity implements, and the outcome rules of section 7 reach the
+  `COMPLETE` handler through a `CompletionPolicy` interface implemented by `ActionType`.
+- States and transitions are loaded and validated **once at startup** into an immutable
+  in-memory `WorkflowDefinition` (they only change through migrations, which need a restart).
+
 ### Startup validation (fail fast)
 The application must fail to start, with a clear message, if:
 - there is not exactly one initial state,
 - a transition references a state that does not exist,
-- a transition **from a final state** is allowed for any role other than `ADMIN`.
+- a transition **from a final state** is allowed for any role other than `ADMIN`,
+- the same `(code, from_state)` leads to more than one `to_state` (the engine could not pick a
+  target).
+
+All errors are collected and reported together. A Spring Boot `FailureAnalyzer` turns the failure
+into the standard "APPLICATION FAILED TO START" description/action message.
 
 ### Creation
 Creation always starts in the initial state. If the create request includes `assigneeId`, the
@@ -167,7 +183,8 @@ transition code gets the same ownership semantics without code changes.
 | DOCUMENT_UPLOAD | DONE | optional |
 | ONBOARDING | DONE | optional |
 
-- **Idempotent completion**: `COMPLETE` on an already `COMPLETED` action with the **same outcome**
+- **Idempotent completion**: `COMPLETE` is the **only** idempotent transition, because it is the
+  human decision a client is most likely to retry. `COMPLETE` on an already `COMPLETED` action with the **same outcome**
   returns `200` with the current action and writes nothing. A **different** outcome returns
   `409 ACTION_ALREADY_COMPLETED` including who completed it and when.
   There is no `COMPLETE` row from the final state, so this case is handled before the transition
@@ -277,7 +294,8 @@ Example after creating action 42 assigned to `lucia` and completing it:
 - Assumptions (identity by header, seeded data, one role per user).
 - Trade-offs and decisions (modular monolith, data-driven workflow, audit in the same
   transaction, 404 vs 403, idempotent completion, optimistic locking without server-side retry,
-  no client-sent version, no FK from audit to actions).
+  no client-sent version, no FK from audit to actions, only `COMPLETE` is idempotent, unused
+  transition fields are ignored).
 - Time spent and why the scope exceeded 60 minutes.
 - With another day: PostgreSQL + Testcontainers, JWT authentication, UI, notifications, due dates.
 - Evolution to microservices: publish `ActionChangedEvent` through a transactional outbox to a
