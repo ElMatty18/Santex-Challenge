@@ -8,9 +8,7 @@ import static io.github.elmatty18.workflowinbox.workflow.TestWorkflows.PENDING;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.List;
 
 import io.github.elmatty18.workflowinbox.shared.error.ApiException;
@@ -35,7 +33,7 @@ class TransitionEngineTests {
 	private TransitionEngine engine(WorkflowDefinition definition) {
 		return new TransitionEngine(definition,
 				new TransitionHandlerRegistry(List.of(new AssignTransitionHandler(directory),
-						new CompleteTransitionHandler(Clock.fixed(NOW, ZoneOffset.UTC)), new ReopenTransitionHandler())));
+						new CompleteTransitionHandler(), new ReopenTransitionHandler())));
 	}
 
 	@Nested
@@ -78,7 +76,7 @@ class TransitionEngineTests {
 		void assignsReviewerAndMovesToPending() {
 			FakeWorkflowItem item = FakeWorkflowItem.created();
 
-			TransitionResult result = engine.apply(item, ANA, assign("ASSIGN", "lucia"));
+			TransitionResult result = engine.apply(item, ANA, assign("ASSIGN", "lucia"), NOW);
 
 			assertThat(result.applied()).isTrue();
 			assertThat(result.from().name()).isEqualTo("CREATED");
@@ -109,7 +107,7 @@ class TransitionEngineTests {
 		void adminReassignsToAnotherReviewer() {
 			FakeWorkflowItem item = FakeWorkflowItem.pendingFor("lucia");
 
-			TransitionResult result = engine.apply(item, ADMIN_USER, assign("REASSIGN", "martin"));
+			TransitionResult result = engine.apply(item, ADMIN_USER, assign("REASSIGN", "martin"), NOW);
 
 			assertThat(result.to().name()).isEqualTo("PENDING");
 			assertThat(item.assigneeId()).isEqualTo("martin");
@@ -125,7 +123,7 @@ class TransitionEngineTests {
 		void ignoresFieldsAssignDoesNotUse() {
 			FakeWorkflowItem item = FakeWorkflowItem.created();
 
-			engine.apply(item, ANA, new TransitionRequest("ASSIGN", "lucia", Outcome.APPROVED, "ignored"));
+			engine.apply(item, ANA, new TransitionRequest("ASSIGN", "lucia", Outcome.APPROVED, "ignored"), NOW);
 
 			assertThat(item.outcome()).isNull();
 			assertThat(item.comment()).isNull();
@@ -167,7 +165,7 @@ class TransitionEngineTests {
 			FakeWorkflowItem item = FakeWorkflowItem.pendingFor("lucia");
 
 			TransitionResult result = engine.apply(item, LUCIA,
-					new TransitionRequest("START_REVIEW", "martin", Outcome.DONE, "ignored"));
+					new TransitionRequest("START_REVIEW", "martin", Outcome.DONE, "ignored"), NOW);
 
 			assertThat(result.to().name()).isEqualTo("IN_REVIEW");
 			assertThat(item.stateCode()).isEqualTo(50);
@@ -185,7 +183,7 @@ class TransitionEngineTests {
 		void completesWithOutcomeCommentAndCompletionData() {
 			FakeWorkflowItem item = FakeWorkflowItem.pendingFor("lucia");
 
-			TransitionResult result = engine.apply(item, LUCIA, complete(Outcome.REJECTED, "Over budget"));
+			TransitionResult result = engine.apply(item, LUCIA, complete(Outcome.REJECTED, "Over budget"), NOW);
 
 			assertThat(result.applied()).isTrue();
 			assertThat(item.stateCode()).isEqualTo(COMPLETED);
@@ -218,7 +216,7 @@ class TransitionEngineTests {
 		void storesReasonClearsOutcomeAndKeepsAssignee() {
 			FakeWorkflowItem item = FakeWorkflowItem.completedBy("lucia", Outcome.APPROVED, "Within policy", EARLIER);
 
-			TransitionResult result = engine.apply(item, ADMIN_USER, reopen("Receipt was missing"));
+			TransitionResult result = engine.apply(item, ADMIN_USER, reopen("Receipt was missing"), NOW);
 
 			assertThat(result.from().name()).isEqualTo("COMPLETED");
 			assertThat(result.to().name()).isEqualTo("PENDING");
@@ -251,7 +249,7 @@ class TransitionEngineTests {
 		void sameOutcomeIsANoOp() {
 			FakeWorkflowItem before = completed.copy();
 
-			TransitionResult result = engine.apply(completed, LUCIA, complete(Outcome.APPROVED, "different comment"));
+			TransitionResult result = engine.apply(completed, LUCIA, complete(Outcome.APPROVED, "different comment"), NOW);
 
 			assertThat(result.applied()).isFalse();
 			assertThat(result.from().name()).isEqualTo("COMPLETED");
@@ -261,7 +259,7 @@ class TransitionEngineTests {
 
 		@Test
 		void differentOutcomeConflictsWithWhoAndWhen() {
-			assertThatThrownBy(() -> engine.apply(completed, ADMIN_USER, complete(Outcome.REJECTED, "Over budget")))
+			assertThatThrownBy(() -> engine.apply(completed, ADMIN_USER, complete(Outcome.REJECTED, "Over budget"), NOW))
 				.isInstanceOfSatisfying(ApiException.class, ex -> {
 					assertThat(ex.errorCode()).isEqualTo(ErrorCode.ACTION_ALREADY_COMPLETED);
 					assertThat(ex.properties()).containsEntry("outcome", Outcome.APPROVED)
@@ -295,7 +293,7 @@ class TransitionEngineTests {
 	private void assertRejected(FakeWorkflowItem item, User user, TransitionRequest request, ErrorCode errorCode,
 			String message) {
 		FakeWorkflowItem before = item.copy();
-		ThrowingCallable apply = () -> engine.apply(item, user, request);
+		ThrowingCallable apply = () -> engine.apply(item, user, request, NOW);
 
 		assertThatThrownBy(apply).isInstanceOfSatisfying(ApiException.class,
 				ex -> assertThat(ex.errorCode()).isEqualTo(errorCode))

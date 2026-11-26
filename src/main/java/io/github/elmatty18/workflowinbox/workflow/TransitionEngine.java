@@ -1,5 +1,6 @@
 package io.github.elmatty18.workflowinbox.workflow;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -51,13 +52,14 @@ public class TransitionEngine {
 
 	/**
 	 * Validates and applies a transition, mutating the item.
+	 * @param occurredAt when the change happens, passed to the handlers (e.g. completion time)
 	 * @return the result; {@code applied} is {@code false} for an idempotent repeat (item untouched)
 	 * @throws ApiException {@code INVALID_TRANSITION} if the code is not defined from the current
 	 * state, {@code FORBIDDEN} if it is but not for the user's role, {@code BUSINESS_RULE_VIOLATION}
 	 * if a handler rule fails, or the handler's conflict (e.g. {@code ACTION_ALREADY_COMPLETED}) for
 	 * a non-matching repeat
 	 */
-	public TransitionResult apply(WorkflowItem item, User user, TransitionRequest request) {
+	public TransitionResult apply(WorkflowItem item, User user, TransitionRequest request, Instant occurredAt) {
 		WorkflowState from = definition.state(item.stateCode());
 		TransitionHandler handler = handlers.handlerFor(request.code());
 		List<Transition> candidates = matching(definition.transitionsFrom(from.code()), request.code());
@@ -72,7 +74,7 @@ public class TransitionEngine {
 			.orElseThrow(() -> forbidden(user, request, from));
 
 		handler.validate(item, request, user);
-		handler.apply(item, request, user);
+		handler.apply(item, request, user, occurredAt);
 		item.moveTo(transition.toState());
 		return new TransitionResult(request.code(), from, definition.state(transition.toState()), true);
 	}

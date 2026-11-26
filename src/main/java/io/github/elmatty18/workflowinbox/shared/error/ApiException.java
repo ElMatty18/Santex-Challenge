@@ -1,5 +1,6 @@
 package io.github.elmatty18.workflowinbox.shared.error;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -20,6 +21,15 @@ public class ApiException extends RuntimeException {
 		super(message);
 		this.errorCode = errorCode;
 		this.properties = Map.copyOf(properties);
+	}
+
+	/**
+	 * A {@code VALIDATION_FAILED} error about one request field, with the same body shape as Bean
+	 * Validation errors.
+	 */
+	public static ApiException validation(String field, String message) {
+		return new ApiException(ErrorCode.VALIDATION_FAILED, GlobalExceptionHandler.VALIDATION_DETAIL,
+				Map.of("fieldErrors", List.of(new FieldErrorDetail(field, message))));
 	}
 
 	public ErrorCode errorCode() {

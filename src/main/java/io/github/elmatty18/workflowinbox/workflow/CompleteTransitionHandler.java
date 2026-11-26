@@ -1,6 +1,6 @@
 package io.github.elmatty18.workflowinbox.workflow;
 
-import java.time.Clock;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 
@@ -17,12 +17,6 @@ import org.springframework.stereotype.Component;
 @Component
 class CompleteTransitionHandler implements IdempotentTransitionHandler {
 
-	private final Clock clock;
-
-	CompleteTransitionHandler(Clock clock) {
-		this.clock = clock;
-	}
-
 	@Override
 	public Set<String> codes() {
 		return Set.of("COMPLETE");
@@ -37,8 +31,8 @@ class CompleteTransitionHandler implements IdempotentTransitionHandler {
 	}
 
 	@Override
-	public void apply(WorkflowItem item, TransitionRequest request, User user) {
-		item.complete(request.outcome(), request.comment(), user.id(), clock.instant());
+	public void apply(WorkflowItem item, TransitionRequest request, User user, Instant occurredAt) {
+		item.complete(request.outcome(), request.comment(), user.id(), occurredAt);
 	}
 
 	@Override

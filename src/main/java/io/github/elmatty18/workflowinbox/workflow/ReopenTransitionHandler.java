@@ -1,5 +1,6 @@
 package io.github.elmatty18.workflowinbox.workflow;
 
+import java.time.Instant;
 import java.util.Set;
 
 import io.github.elmatty18.workflowinbox.shared.error.ApiException;
@@ -27,7 +28,7 @@ class ReopenTransitionHandler implements TransitionHandler {
 	}
 
 	@Override
-	public void apply(WorkflowItem item, TransitionRequest request, User user) {
+	public void apply(WorkflowItem item, TransitionRequest request, User user, Instant occurredAt) {
 		item.reopen(request.comment());
 	}
 

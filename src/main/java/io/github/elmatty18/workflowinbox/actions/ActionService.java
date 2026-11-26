@@ -2,17 +2,14 @@ package io.github.elmatty18.workflowinbox.actions;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import io.github.elmatty18.workflowinbox.actions.ActionDtos.ActionResponse;
 import io.github.elmatty18.workflowinbox.actions.ActionDtos.CreateActionRequest;
 import io.github.elmatty18.workflowinbox.actions.ActionDtos.TransitionCommand;
 import io.github.elmatty18.workflowinbox.shared.error.ApiException;
 import io.github.elmatty18.workflowinbox.shared.error.ErrorCode;
-import io.github.elmatty18.workflowinbox.shared.error.FieldErrorDetail;
 import io.github.elmatty18.workflowinbox.shared.events.ActionChangedEvent;
 import io.github.elmatty18.workflowinbox.shared.events.FieldChange;
 import io.github.elmatty18.workflowinbox.shared.web.PageResponse;
@@ -65,7 +62,7 @@ class ActionService {
 		if (!user.hasRole(Role.REQUESTER) && !user.hasRole(Role.ADMIN)) {
 			throw new ApiException(ErrorCode.FORBIDDEN, "Role %s may not create actions".formatted(user.role()));
 		}
-		Instant now = now();
+		Instant now = clock.instant();
 		Action action = repository.save(Action.create(request.type(), request.title(), request.description(), user.id(),
 				engine.initialState().code(), now));
 		publish(action, user, ActionSnapshot.NONE.changesTo(snapshot(action)), now);
@@ -96,7 +93,7 @@ class ActionService {
 		conditions.add(ActionSpecifications.visibleTo(user));
 		if (stateName != null) {
 			int stateCode = engine.findStateByName(stateName)
-				.orElseThrow(() -> unknownState(stateName))
+				.orElseThrow(() -> ApiException.validation("state", "Unknown state '%s'".formatted(stateName)))
 				.code();
 			conditions.add(ActionSpecifications.inState(stateCode));
 		}
@@ -123,12 +120,13 @@ class ActionService {
 	}
 
 	private void applyTransition(Action action, User user, TransitionRequest request) {
+		// one instant per change: completedAt, updatedAt and the audit rows all share it
+		Instant now = clock.instant();
 		ActionSnapshot before = snapshot(action);
-		TransitionResult result = engine.apply(action, user, request);
+		TransitionResult result = engine.apply(action, user, request, now);
 		if (!result.applied()) {
 			return;
 		}
-		Instant now = now();
 		action.touch(now);
 		// flush now so an optimistic locking conflict surfaces here, before the event is published
 		repository.saveAndFlush(action);
@@ -150,19 +148,6 @@ class ActionService {
 
 	private ActionResponse toResponse(Action action) {
 		return ActionResponse.of(action, engine.state(action.stateCode()));
-	}
-
-	/**
-	 * Truncated to the database precision, so a response right after a change shows the same value
-	 * as a later read.
-	 */
-	private Instant now() {
-		return clock.instant().truncatedTo(ChronoUnit.MICROS);
-	}
-
-	private static ApiException unknownState(String stateName) {
-		return new ApiException(ErrorCode.VALIDATION_FAILED, "The request is not valid",
-				Map.of("fieldErrors", List.of(new FieldErrorDetail("state", "Unknown state '%s'".formatted(stateName)))));
 	}
 
 }

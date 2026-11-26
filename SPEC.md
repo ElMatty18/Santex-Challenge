@@ -138,6 +138,11 @@ rows. Only a transition with new side effects needs a new handler class.
   `COMPLETE` handler through a `CompletionPolicy` interface implemented by `ActionType`.
 - States and transitions are loaded and validated **once at startup** into an immutable
   in-memory `WorkflowDefinition` (they only change through migrations, which need a restart).
+- **One instant per change.** The caller decides "now" once and passes it in:
+  `TransitionEngine.apply(item, user, request, Instant occurredAt)` →
+  `TransitionHandler.apply(item, request, user, Instant occurredAt)`. Handlers never read a clock
+  (e.g. `COMPLETE` sets `completedAt = occurredAt`), so `completedAt`, `updatedAt` and the audit
+  `changed_at` of a change are the same instant.
 
 ### Startup validation (fail fast)
 The application must fail to start, with a clear message, if:
@@ -219,7 +224,7 @@ transition code gets the same ownership semantics without code changes.
 | `POST /api/v1/actions/{id}/transitions` | per table | Body: `{ "transition": "COMPLETE", "assigneeId"?, "outcome"?, "comment"? }`. `200` with updated action |
 | `GET /api/v1/workflow/states` | all | Configured states |
 | `GET /api/v1/workflow/transitions` | all | Configured transitions |
-| `GET /api/v1/audit` | ADMIN | Filters `actionId`, `userId`, `from`, `to` (ISO-8601, inclusive); paginated; newest first; `from > to` → 400 |
+| `GET /api/v1/audit` | ADMIN | Filters `actionId`, `userId`, `from`, `to` (ISO-8601 instants, any offset, converted to UTC; inclusive); paginated; newest first (`changedAt` desc, then `id` desc); `from > to` → 400. Items: `{id, actionId, changedAt, userId, field, oldValue, newValue, requestId}` |
 
 One generic transitions endpoint is what lets new states work without new endpoints.
 
@@ -232,6 +237,8 @@ One generic transitions endpoint is what lets new states work without new endpoi
 - **Action representation**: `id`, `type`, `title`, `description`, `state: { code, name }`,
   `requesterId`, `assigneeId`, `outcome`, `comment`, `completedBy`, `completedAt`, `createdAt`,
   `updatedAt`, `version`.
+- **Time source**: a single `Clock` bean that ticks in **microseconds** (the precision of the
+  timestamp columns), so a value returned right after a change equals the one read back later.
 - **Timestamps** are always ISO-8601 UTC strings (e.g. `2026-11-26T12:00:00Z`), never numbers,
   including those inside Problem Details.
 - The workflow endpoints and `GET /actions/{id}/transitions` return the workflow domain records
@@ -273,7 +280,11 @@ own service.
 - The event carries no request id: the listener reads `requestId` from the MDC (set by
   `RequestIdFilter`), which works because it runs synchronously in the request thread.
 - `audit` consumes it with a plain synchronous `@EventListener`, which runs **in the same
-  transaction**: a change and its audit commit or roll back together.
+  transaction**: a change and its audit commit or roll back together. The listener is
+  `@Transactional(propagation = MANDATORY)`: publishing the event outside a transaction fails
+  instead of writing audit rows without one.
+- If the audit write fails, the action change rolls back (tested by making the `audit_log`
+  insert fail in the database).
 - Deliberately **not** `@TransactionalEventListener(AFTER_COMMIT)` (a failure would leave a
   committed change without audit) and **not** Hibernate Envers (stores whole revisions, not
   field / old / new rows, and does not know the business user).
@@ -291,7 +302,14 @@ Example after creating action 42 assigned to `lucia` and completing it:
 
 ## 12. Observability
 - `RequestIdFilter`: reads `X-Request-Id` or generates a UUID, returns it in the response header,
-  puts `requestId` and `userId` in the MDC, clears the MDC in `finally`.
+  puts `requestId` and `userId` in the MDC, clears the MDC in `finally`. Runs before every other
+  filter.
+  - A caller's `X-Request-Id` is kept only if it matches `[A-Za-z0-9._:-]{1,100}` (fits
+    `audit_log.request_id` and cannot inject into logs); otherwise a new UUID is generated.
+  - `userId` goes into the MDC only if it matches `[A-Za-z0-9._@-]{1,50}`. It is the id the
+    caller **claims**, put there before identity is checked (so it also appears on 401 logs).
+- Until step 6, `requestId` is not yet a Problem Details property and an unexpected exception
+  (e.g. a failed audit write) is not yet mapped to `500 INTERNAL_ERROR`; step 6 adds both.
 - Logs include the MDC values (structured console logging if available in Boot 4).
 - Metrics: counter `inbox.transitions` tagged `transition` and `result` (`success`/`rejected`);
   timer `inbox.transition.duration` tagged `transition`. No high-cardinality tags.
@@ -336,7 +354,8 @@ Example after creating action 42 assigned to `lucia` and completing it:
 2. Users and `CurrentUserResolver`.
 3. Workflow entities, startup validator, transition handlers and engine (+ unit tests).
 4. Actions: entity, service, controller (+ integration tests).
-5. Audit: event, listener, search endpoint (+ tests).
-6. Errors, request ID filter, metrics, springdoc.
+5. Audit: event, listener, search endpoint (+ tests), plus the request ID filter (brought forward
+   so audit rows get a real `request_id`).
+6. Errors (500, `requestId` in Problem Details), logging with MDC, metrics, springdoc.
 7. Concurrency test.
 8. README.

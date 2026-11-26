@@ -1,5 +1,6 @@
 package io.github.elmatty18.workflowinbox.workflow;
 
+import java.time.Instant;
 import java.util.Set;
 
 import io.github.elmatty18.workflowinbox.users.User;
@@ -26,8 +27,10 @@ public interface TransitionHandler {
 
 	/**
 	 * Applies side effects. Called only after {@link #validate} passed.
+	 * @param occurredAt when the transition happens; one instant per change, shared with the
+	 * action's timestamps and its audit rows
 	 */
-	default void apply(WorkflowItem item, TransitionRequest request, User user) {
+	default void apply(WorkflowItem item, TransitionRequest request, User user, Instant occurredAt) {
 	}
 
 }

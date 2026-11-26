@@ -1,5 +1,6 @@
 package io.github.elmatty18.workflowinbox.workflow;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.Set;
 
@@ -45,7 +46,7 @@ class AssignTransitionHandler implements TransitionHandler {
 	}
 
 	@Override
-	public void apply(WorkflowItem item, TransitionRequest request, User user) {
+	public void apply(WorkflowItem item, TransitionRequest request, User user, Instant occurredAt) {
 		item.assignTo(request.assigneeId());
 	}
 
