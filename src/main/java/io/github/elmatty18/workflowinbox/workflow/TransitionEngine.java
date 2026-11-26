@@ -38,6 +38,10 @@ public class TransitionEngine {
 		return definition.findStateByName(name);
 	}
 
+	public boolean isConfiguredTransition(String code) {
+		return definition.transitions().stream().anyMatch(t -> t.code().equals(code));
+	}
+
 	/**
 	 * Transitions the user's role may start from the item's current state, according to the table.
 	 * Handler preconditions are not evaluated, and idempotent repeats are not listed.

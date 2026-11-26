@@ -13,7 +13,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
@@ -134,8 +133,11 @@ class AuditTrailIntegrationTests {
 			jdbc.execute("ALTER TABLE audit_log DROP CONSTRAINT ck_test_audit_failure");
 		}
 
-		// no 500 mapping yet (step 6): the exception reaches MockMvc unhandled, wrapped by the servlet
-		assertThat(result.getUnresolvedException()).hasCauseInstanceOf(DataIntegrityViolationException.class);
+		assertThat(result).hasStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+			.bodyJson()
+			.extractingPath("$.errorCode")
+			.isEqualTo("INTERNAL_ERROR");
+		assertThat(result).bodyJson().extractingPath("$.detail").asString().doesNotContain("FAIL-AUDIT", "constraint");
 		MvcTestResult action = getAction(id);
 		assertThat(action).bodyJson().extractingPath("$.state.name").isEqualTo("PENDING");
 		assertThat(action).bodyJson().extractingPath("$.outcome").isNull();

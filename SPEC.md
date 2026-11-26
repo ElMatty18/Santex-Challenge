@@ -32,7 +32,7 @@ resolve the ones assigned to them, admins oversee everything.
 - H2 in-memory database. Schema and seed data with **Flyway** migrations.
   `spring.jpa.hibernate.ddl-auto=validate`, `spring.jpa.open-in-view=false`.
 - **springdoc-openapi** for OpenAPI + Swagger UI: add a version compatible with Spring Boot 4
-  (the 2.x line targets Boot 3). Verify compatibility before adding it.
+  (the 2.x line targets Boot 3). Verified: 3.2.1, built on Boot 4.2.0 (see section 12).
 - Micrometer through Actuator. Tests: JUnit, Spring Boot Test, MockMvc, AssertJ.
 - No Lombok. DTOs are records; entities are regular classes.
 
@@ -262,6 +262,29 @@ traces.
 | 422 | BUSINESS_RULE_VIOLATION | Outcome invalid for type, missing reason/comment, assignee not a reviewer |
 | 500 | INTERNAL_ERROR | Unexpected error (logged in full, generic body) |
 
+Protocol-level errors raised by Spring MVC itself (not by the application) use their own codes:
+
+| HTTP | errorCode | When |
+|---|---|---|
+| 400 | VALIDATION_FAILED | Other framework 400s, e.g. a missing required parameter |
+| 404 | RESOURCE_NOT_FOUND | No endpoint for the path |
+| 405 | METHOD_NOT_ALLOWED | Path exists, HTTP method not supported |
+| 406 | NOT_ACCEPTABLE | Requested response media type not available |
+| 415 | UNSUPPORTED_MEDIA_TYPE | Request body media type not supported |
+| other 4xx | REQUEST_NOT_SUPPORTED | Any other framework client error |
+
+- `GlobalExceptionHandler` extends `ResponseEntityExceptionHandler`, so these keep their status
+  instead of falling into the 500 handler. Every Problem Details response, the application's and
+  the framework's, passes through one place that adds `errorCode` and `requestId` (from the MDC;
+  same value as the `X-Request-Id` response header).
+- Logging: expected errors (`ApiException`, optimistic locking conflict) are one INFO line;
+  unexpected ones are logged at ERROR with the stack trace. The `500` body never includes the
+  exception message or stack trace: `"An unexpected error occurred. Quote the requestId when
+  reporting it."`
+- Known limit: errors raised **outside** Spring MVC (in a servlet filter, before the
+  `DispatcherServlet`) go through Boot's `/error` with its default JSON, without
+  `errorCode`/`requestId`. No such case exists in the application today.
+
 ## 11. Audit
 Table `audit_log`: `id`, `action_id`, `changed_at` (UTC), `user_id`, `field`, `old_value`,
 `new_value`, `request_id`. Indexes on `action_id`, `(user_id, changed_at)` and `changed_at`.
@@ -308,13 +331,36 @@ Example after creating action 42 assigned to `lucia` and completing it:
     `audit_log.request_id` and cannot inject into logs); otherwise a new UUID is generated.
   - `userId` goes into the MDC only if it matches `[A-Za-z0-9._@-]{1,50}`. It is the id the
     caller **claims**, put there before identity is checked (so it also appears on 401 logs).
-- Until step 6, `requestId` is not yet a Problem Details property and an unexpected exception
-  (e.g. a failed audit write) is not yet mapped to `500 INTERNAL_ERROR`; step 6 adds both.
-- Logs include the MDC values (structured console logging if available in Boot 4).
-- Metrics: counter `inbox.transitions` tagged `transition` and `result` (`success`/`rejected`);
-  timer `inbox.transition.duration` tagged `transition`. No high-cardinality tags.
+- **Logs** include the MDC values.
+  - Default: Boot's plain console pattern with `logging.pattern.correlation=[%X{requestId:-}
+    %X{userId:-}]\ ` → `... [req-42 ana] i.g.e.w.actions.ActionService : Action 5 created`. The
+    value ends in an escaped space (`\ `) because Boot trims a plain trailing space, and also an
+    escaped ` `.
+  - Structured JSON (ECS) with the `json` profile (`application-json.properties`), where
+    `requestId` and `userId` become fields. Not the default because it is harder to read locally.
+  - INFO lines for: action created, transition applied (`ASSIGN CREATED -> PENDING`), idempotent
+    repeat with nothing changed.
+- **Metrics** (`actions.TransitionMetrics`): counter `inbox.transitions` tagged `transition` and
+  `result`; timer `inbox.transition.duration` tagged `transition`. No high-cardinality tags.
+  - `transition` is a code configured in `state_transition`, or `UNKNOWN` for anything else (the
+    code comes from the request body, so any string could arrive).
+  - `result` is `success`, `rejected` (expected 4xx outcome: `ApiException` or optimistic
+    locking conflict) or `error` (unexpected exception).
+  - An idempotent repeat counts as `success`; a `404` (not visible) counts as `rejected` for
+    that code; the `ASSIGN` applied during create is counted; the timer records every result.
+  - Measured inside the service method, so a failure at commit time would not be counted
+    (`saveAndFlush` makes that very unlikely).
 - Actuator exposes `health`, `info`, `metrics`.
-- Swagger UI documents the `X-User-Id` header and error responses.
+- **OpenAPI / Swagger UI** (springdoc-openapi **3.2.1**, the 3.x line for Boot 4; 3.2.1 is built
+  on Boot 4.2.0). Swagger UI at `/swagger-ui.html`, spec at `/v3/api-docs`, both without
+  `X-User-Id`.
+  - Only `/api/**` is documented (`springdoc.paths-to-match`); springdoc's automatic responses
+    per `@ExceptionHandler` are disabled (`springdoc.override-with-generic-response=false`).
+  - The `users` module documents its own header: `X-User-Id` (required, header) on every
+    operation, and the `@CurrentUser` parameter is hidden.
+  - Errors are a `Problem` schema with reusable `components.responses`. `400`, `401` and `500`
+    are added to every operation; each endpoint declares its own `403`/`404`/`409`/`422` with
+    `@ApiResponse(ref = ...)`.
 
 ## 13. Tests
 - **Isolation**: integration tests commit for real (no test-managed transaction, so optimistic

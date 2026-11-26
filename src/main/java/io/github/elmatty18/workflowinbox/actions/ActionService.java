@@ -20,6 +20,9 @@ import io.github.elmatty18.workflowinbox.workflow.TransitionEngine;
 import io.github.elmatty18.workflowinbox.workflow.TransitionRequest;
 import io.github.elmatty18.workflowinbox.workflow.TransitionResult;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -34,6 +37,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 class ActionService {
 
+	private static final Logger log = LoggerFactory.getLogger(ActionService.class);
+
 	private static final String ASSIGN = "ASSIGN";
 
 	private static final Sort OLDEST_FIRST = Sort.by(Sort.Order.asc("createdAt"), Sort.Order.asc("id"));
@@ -46,11 +51,15 @@ class ActionService {
 
 	private final Clock clock;
 
-	ActionService(ActionRepository repository, TransitionEngine engine, ApplicationEventPublisher events, Clock clock) {
+	private final TransitionMetrics metrics;
+
+	ActionService(ActionRepository repository, TransitionEngine engine, ApplicationEventPublisher events, Clock clock,
+			TransitionMetrics metrics) {
 		this.repository = repository;
 		this.engine = engine;
 		this.events = events;
 		this.clock = clock;
+		this.metrics = metrics;
 	}
 
 	/**
@@ -66,9 +75,11 @@ class ActionService {
 		Action action = repository.save(Action.create(request.type(), request.title(), request.description(), user.id(),
 				engine.initialState().code(), now));
 		publish(action, user, ActionSnapshot.NONE.changesTo(snapshot(action)), now);
+		log.info("Action {} created ({})", action.id(), action.type());
 
 		if (request.assigneeId() != null && !request.assigneeId().isBlank()) {
-			applyTransition(action, user, new TransitionRequest(ASSIGN, request.assigneeId(), null, null));
+			metrics.record(ASSIGN, () -> applyTransition(action, user,
+					new TransitionRequest(ASSIGN, request.assigneeId(), null, null)));
 		}
 		return toResponse(action);
 	}
@@ -114,23 +125,28 @@ class ActionService {
 	 */
 	@Transactional
 	ActionResponse applyTransition(long id, TransitionCommand command, User user) {
-		Action action = findVisible(id, user);
-		applyTransition(action, user, command.toRequest());
-		return toResponse(action);
+		return metrics.record(command.transition(), () -> {
+			Action action = findVisible(id, user);
+			applyTransition(action, user, command.toRequest());
+			return toResponse(action);
+		});
 	}
 
-	private void applyTransition(Action action, User user, TransitionRequest request) {
+	private TransitionResult applyTransition(Action action, User user, TransitionRequest request) {
 		// one instant per change: completedAt, updatedAt and the audit rows all share it
 		Instant now = clock.instant();
 		ActionSnapshot before = snapshot(action);
 		TransitionResult result = engine.apply(action, user, request, now);
 		if (!result.applied()) {
-			return;
+			log.info("Action {}: {} repeated with the same outcome, nothing changed", action.id(), result.code());
+			return result;
 		}
 		action.touch(now);
 		// flush now so an optimistic locking conflict surfaces here, before the event is published
 		repository.saveAndFlush(action);
 		publish(action, user, before.changesTo(snapshot(action)), now);
+		log.info("Action {}: {} {} -> {}", action.id(), result.code(), result.from().name(), result.to().name());
+		return result;
 	}
 
 	private Action findVisible(long id, User user) {
