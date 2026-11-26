@@ -77,6 +77,8 @@ in the README (section 12).
 Roles: `ADMIN`, `REQUESTER`, `REVIEWER` (one role per user).
 Seeded users: `admin` (ADMIN), `ana` (REQUESTER), `lucia` (REVIEWER), `martin` (REVIEWER).
 Seed one example action per type, in different states, so the app is usable on startup.
+Seeded actions also get the audit rows that would have produced their current state, attributed
+to realistic users (e.g. `ana` creates and assigns, `lucia` completes) with `request_id = 'seed'`.
 
 ## 6. Data-driven workflow
 
@@ -120,7 +122,7 @@ The table decides **whether** a transition is allowed. A `TransitionHandler` per
 |---|---|
 | ASSIGN / REASSIGN | requires `assigneeId` of an existing user with role `REVIEWER`; sets assignee |
 | COMPLETE | validates outcome for the action type (section 7); sets outcome and comment |
-| REOPEN | requires `comment` (the reason); clears outcome and comment |
+| REOPEN | requires `comment` (the reason); stores the reason in `comment`, clears outcome, keeps the assignee |
 | any other code | generic handler: only changes the state |
 
 So a new intermediate state with a new code (e.g. `START_REVIEW 10 → 50`) needs only migration
@@ -150,9 +152,11 @@ bypasses the transition table.
 | View actions | all | created by them | assigned to them |
 | Search audit | yes | no | no |
 
-Transition permissions come from the table; ownership ("own", "assigned") and visibility are
-enforced in code. An action that exists but is not visible returns **404**, not 403, so callers
-cannot probe which IDs exist.
+Transition permissions come from the table; visibility is enforced in code. An action that
+exists but is not visible returns **404**, not 403, so callers cannot probe which IDs exist.
+Ownership ("own actions", "only if assigned") is exactly the visibility rule, so the visibility
+check runs first and covers it: there are **no per-transition-code ownership rules**, and a new
+transition code gets the same ownership semantics without code changes.
 
 - **Outcome rules on COMPLETE**
 
@@ -166,8 +170,18 @@ cannot probe which IDs exist.
 - **Idempotent completion**: `COMPLETE` on an already `COMPLETED` action with the **same outcome**
   returns `200` with the current action and writes nothing. A **different** outcome returns
   `409 ACTION_ALREADY_COMPLETED` including who completed it and when.
+  There is no `COMPLETE` row from the final state, so this case is handled before the transition
+  lookup. Check order for `COMPLETE` on a `COMPLETED` action: visibility (404) → role allowed
+  for `COMPLETE` (403) → outcome valid for the type (422) → same outcome `200` / different
+  outcome `409 ACTION_ALREADY_COMPLETED`.
 - **Concurrency**: optimistic locking. Two concurrent transitions: exactly one succeeds, the
-  other gets `409 CONCURRENT_MODIFICATION` (unless it is an idempotent repeat).
+  other gets `409 CONCURRENT_MODIFICATION`. There is **no server-side retry**, so this applies
+  even when both requests carry the same outcome; the idempotent `200` only applies to a repeat
+  that arrives after the first one committed. (Trade-off, documented in the README.)
+- **No client-sent version**: the transitions body does not carry `version` / `If-Match`.
+  Optimistic locking protects the request's own read-modify-write window; stale decisions are
+  already prevented by the state machine (`COMPLETE` only leaves `PENDING`). (Trade-off,
+  documented in the README.)
 
 ## 8. Identity (no real authentication)
 - Every `/api/**` request is identified by the `X-User-Id` header, resolved against `app_user`.
@@ -180,7 +194,7 @@ cannot probe which IDs exist.
 | Method & path | Who | Description |
 |---|---|---|
 | `POST /api/v1/actions` | REQUESTER, ADMIN | Create. Body: `type`, `title`, `description?`, `assigneeId?`. `201` + `Location` |
-| `GET /api/v1/actions` | all | Inbox. Filters `state`, `type`, `assigneeId`; `page`, `size` (max 100); oldest first; visibility rules |
+| `GET /api/v1/actions` | all | Inbox. Filters `state` (state **name**, e.g. `PENDING`; unknown name → 400 `VALIDATION_FAILED`), `type`, `assigneeId`; `page`, `size` (max 100); oldest first; visibility rules |
 | `GET /api/v1/actions/{id}` | all | Details (state code + name, requester, assignee, outcome, comment, timestamps, version) |
 | `GET /api/v1/actions/{id}/transitions` | all | Transitions the current user can apply now (code + target state) |
 | `POST /api/v1/actions/{id}/transitions` | per table | Body: `{ "transition": "COMPLETE", "assigneeId"?, "outcome"?, "comment"? }`. `200` with updated action |
@@ -210,6 +224,9 @@ traces.
 ## 11. Audit
 Table `audit_log`: `id`, `action_id`, `changed_at` (UTC), `user_id`, `field`, `old_value`,
 `new_value`, `request_id`. Indexes on `action_id`, `(user_id, changed_at)` and `changed_at`.
+There is deliberately **no foreign key from `audit_log.action_id` to `action`**: it mirrors the
+module boundary (audit does not depend on actions) and the evolution path where audit becomes its
+own service.
 
 - **One row per changed field**. Audited fields: `state`, `assignee`, `outcome`, `comment`.
   Creation is a `state` change from empty to the initial state. Unchanged fields are not audited.
@@ -259,7 +276,8 @@ Example after creating action 42 assigned to `lucia` and completing it:
   console, example `curl` calls per user.
 - Assumptions (identity by header, seeded data, one role per user).
 - Trade-offs and decisions (modular monolith, data-driven workflow, audit in the same
-  transaction, 404 vs 403, idempotent completion, optimistic locking).
+  transaction, 404 vs 403, idempotent completion, optimistic locking without server-side retry,
+  no client-sent version, no FK from audit to actions).
 - Time spent and why the scope exceeded 60 minutes.
 - With another day: PostgreSQL + Testcontainers, JWT authentication, UI, notifications, due dates.
 - Evolution to microservices: publish `ActionChangedEvent` through a transactional outbox to a
