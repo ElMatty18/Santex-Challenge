@@ -412,7 +412,7 @@ src/main/resources/
 
 ## Time spent and scope
 
-The challenge suggests 60 minutes. This took **TODO hours**.
+The challenge suggests 60 minutes. This took 60 minutes in desing, and 60 minutes on development and testing.
 
 I chose to go beyond the suggested scope on purpose: TODO (for example, "the role I am applying
 for owns a workflow runtime, so I wanted the data-driven state machine, role rules and audit
@@ -421,7 +421,7 @@ above are what I would have delivered in the first hour; the rest is the impleme
 design.
 
 Built with Claude Code as a pair programmer, from a written specification (`SPEC.md`) that I
-reviewed step by step. TODO: keep or adjust this note.
+reviewed step by step.
 
 ---
 
