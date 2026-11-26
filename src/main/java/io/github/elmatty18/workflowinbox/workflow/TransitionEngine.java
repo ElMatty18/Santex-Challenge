@@ -1,6 +1,7 @@
 package io.github.elmatty18.workflowinbox.workflow;
 
 import java.util.List;
+import java.util.Optional;
 
 import io.github.elmatty18.workflowinbox.shared.error.ApiException;
 import io.github.elmatty18.workflowinbox.shared.error.ErrorCode;
@@ -30,6 +31,10 @@ public class TransitionEngine {
 
 	public WorkflowState state(int code) {
 		return definition.state(code);
+	}
+
+	public Optional<WorkflowState> findStateByName(String name) {
+		return definition.findStateByName(name);
 	}
 
 	/**

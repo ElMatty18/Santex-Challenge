@@ -4,6 +4,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -61,6 +62,10 @@ public final class WorkflowDefinition {
 			throw new IllegalArgumentException("Unknown workflow state " + code);
 		}
 		return state;
+	}
+
+	public Optional<WorkflowState> findStateByName(String name) {
+		return states.stream().filter(s -> s.name().equals(name)).findFirst();
 	}
 
 	public List<Transition> transitionsFrom(int stateCode) {

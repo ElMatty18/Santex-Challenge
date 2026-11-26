@@ -153,7 +153,9 @@ into the standard "APPLICATION FAILED TO START" description/action message.
 ### Creation
 Creation always starts in the initial state. If the create request includes `assigneeId`, the
 service applies `ASSIGN` in the same transaction, so the audit shows both steps and no code path
-bypasses the transition table.
+bypasses the transition table. Create-with-assignee therefore publishes **two**
+`ActionChangedEvent`s (creation, then `ASSIGN`); if `ASSIGN` fails (e.g. `422` assignee not a
+reviewer) the whole creation rolls back and no action is left behind.
 
 ## 7. Business rules
 - **Permissions**
@@ -221,6 +223,21 @@ transition code gets the same ownership semantics without code changes.
 
 One generic transitions endpoint is what lets new states work without new endpoints.
 
+- **Pagination** (`GET /api/v1/actions`, `GET /api/v1/audit`): query params `page` (0-based,
+  `>= 0`, default 0) and `size` (1–100, default 20); out-of-range values → `400
+  VALIDATION_FAILED` (never silently clamped). Response body:
+  `{ "items": [...], "page": 0, "size": 20, "totalElements": 42, "totalPages": 3 }`. Spring's
+  `Page` is not serialized directly (its JSON shape is not a stable contract). The inbox sort is
+  fixed: `createdAt` ascending, then `id`.
+- **Action representation**: `id`, `type`, `title`, `description`, `state: { code, name }`,
+  `requesterId`, `assigneeId`, `outcome`, `comment`, `completedBy`, `completedAt`, `createdAt`,
+  `updatedAt`, `version`.
+- **Timestamps** are always ISO-8601 UTC strings (e.g. `2026-11-26T12:00:00Z`), never numbers,
+  including those inside Problem Details.
+- The workflow endpoints and `GET /actions/{id}/transitions` return the workflow domain records
+  directly. Trade-off (README): the API is coupled to those records; a change to them is an API
+  change.
+
 ## 10. Errors
 RFC 9457 Problem Details (`ProblemDetail`, `application/problem+json`) with extra properties
 `errorCode` and `requestId`. Validation errors include a `fieldErrors` list. Never expose stack
@@ -248,7 +265,13 @@ own service.
 - **One row per changed field**. Audited fields: `state`, `assignee`, `outcome`, `comment`.
   Creation is a `state` change from empty to the initial state. Unchanged fields are not audited.
 - The `actions` module publishes `ActionChangedEvent(actionId, userId, List<FieldChange>,
-  occurredAt)`; `FieldChange(field, oldValue, newValue)`.
+  occurredAt)`; `FieldChange(field, oldValue, newValue)`. Both live in `shared`, so `audit`
+  never imports `actions`. Values are text: `state` by name, `outcome` by enum name, empty =
+  `null`. Changes are listed in a fixed order (`assignee`, `state`, `outcome`, `comment`), which
+  reproduces the example below.
+- An idempotent repeat publishes no event (nothing changed).
+- The event carries no request id: the listener reads `requestId` from the MDC (set by
+  `RequestIdFilter`), which works because it runs synchronously in the request thread.
 - `audit` consumes it with a plain synchronous `@EventListener`, which runs **in the same
   transaction**: a change and its audit commit or roll back together.
 - Deliberately **not** `@TransactionalEventListener(AFTER_COMMIT)` (a failure would leave a
@@ -276,6 +299,10 @@ Example after creating action 42 assigned to `lucia` and completing it:
 - Swagger UI documents the `X-User-Id` header and error responses.
 
 ## 13. Tests
+- **Isolation**: integration tests commit for real (no test-managed transaction, so optimistic
+  locking and commit-time behaviour are exercised). Any test that changes data creates its own
+  actions through the API and never modifies seeded ones; seeded actions are used only by
+  read-only tests (visibility, filters, ordering). Results never depend on execution order.
 - Integration tests (`@SpringBootTest` + MockMvc, real H2 + Flyway):
   - create with assignee → complete → audit rows present;
   - 401 without header, 403 wrong role, 404 not visible;
@@ -295,7 +322,7 @@ Example after creating action 42 assigned to `lucia` and completing it:
 - Trade-offs and decisions (modular monolith, data-driven workflow, audit in the same
   transaction, 404 vs 403, idempotent completion, optimistic locking without server-side retry,
   no client-sent version, no FK from audit to actions, only `COMPLETE` is idempotent, unused
-  transition fields are ignored).
+  transition fields are ignored, API coupled to the workflow domain records).
 - Time spent and why the scope exceeded 60 minutes.
 - With another day: PostgreSQL + Testcontainers, JWT authentication, UI, notifications, due dates.
 - Evolution to microservices: publish `ActionChangedEvent` through a transactional outbox to a
